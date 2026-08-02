@@ -5,6 +5,10 @@ import ora from 'ora'
 import axios from 'axios'
 import * as fs from 'fs'
 import * as path from 'path'
+import * as dotenv from 'dotenv'
+import * as inquirer from 'inquirer'
+
+dotenv.config()
 
 const program = new Command()
 
@@ -15,7 +19,9 @@ program
 
 program
     .argument('<file>', 'TypeScript file to generate tests for')
-    .action(async (file: string) => {
+    .option('-o, --output <dir>', 'Output directory for the generated tests')
+    .option('-d, --dry-run', 'Skip writing to file and print output')
+    .action(async (file: string, options: { output?: string, dryRun?: boolean }) => {
         // Step 1: Resolve path
         const filePath = path.resolve(process.cwd(), file)
 
@@ -24,23 +30,64 @@ program
             process.exit(1)
         }
 
+        if (!filePath.endsWith('.ts')) {
+            console.log(chalk.red('❌ Only .ts files are supported.'))
+            process.exit(1)
+        }
+
         // Step 2: Read file
         const fileContent = fs.readFileSync(filePath, 'utf8')
 
-        // Step 3: Spinner
+        const apiUrl = process.env.TESTGENAI_API_URL || 'http://localhost:3000'
+
+        // Step 3: Health check
+        try {
+            await axios.get(`${apiUrl}/health`, { timeout: 5000 })
+        } catch (error) {
+            console.log(chalk.red(`❌ Backend is offline (${apiUrl})`))
+            process.exit(1)
+        }
+
+        // Step 4: Spinner
         const spinner = ora('Generating tests...').start()
 
         try {
-            const generatedCode = await apiCall(fileContent)
+            const generatedCode = await apiCall(fileContent, apiUrl)
 
             spinner.succeed(chalk.green('Tests generated successfully!'))
 
-            // Step 4: Write .spec.ts beside original file
+            if (options.dryRun) {
+                console.log(chalk.yellow('\n--- Dry Run Output ---\n'))
+                console.log(generatedCode)
+                console.log(chalk.yellow('\n----------------------\n'))
+                return;
+            }
+
+            // Step 5: Write .spec.ts
             const parsed = path.parse(filePath)
-            const specPath = path.join(
-                parsed.dir,
-                `${parsed.name}.spec${parsed.ext}`
-            )
+            
+            let targetDir = parsed.dir
+            if (options.output) {
+                targetDir = path.resolve(process.cwd(), options.output)
+                if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true })
+                }
+            }
+
+            const specPath = path.join(targetDir, `${parsed.name}.spec${parsed.ext}`)
+
+            if (fs.existsSync(specPath)) {
+                const answers = await inquirer.prompt([{
+                    type: 'confirm',
+                    name: 'overwrite',
+                    message: `File ${specPath} already exists. Overwrite?`,
+                    default: false
+                }])
+                if (!answers.overwrite) {
+                    console.log(chalk.yellow('Skipped generation.'))
+                    process.exit(0)
+                }
+            }
 
             fs.writeFileSync(specPath, generatedCode, 'utf8')
 
@@ -62,16 +109,11 @@ program
 
 program.parse()
 
-async function apiCall(fileContent: string): Promise<string> {
+async function apiCall(fileContent: string, apiUrl: string): Promise<string> {
     const response = await axios.post(
-        `${process.env.BACKEND_URL}/generate`,
-        {
-            fileContent,
-        },
-        {
-            timeout: 120000,
-        }
+        `${apiUrl}/generate`,
+        { fileContent },
+        { timeout: 120000 }
     )
-
     return response.data
 }

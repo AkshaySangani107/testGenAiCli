@@ -20,9 +20,12 @@
     "axios": "^1.19.0",
     "chalk": "^6.0.0",
     "commander": "^15.0.0",
+    "dotenv": "^16.4.7",
+    "inquirer": "^8.2.6",
     "ora": "^9.4.1"
   },
   "devDependencies": {
+    "@types/inquirer": "^8.2.10",
     "@types/node": "^26.1.2",
     "ts-node": "^10.9.2",
     "typescript": "^7.0.2"
