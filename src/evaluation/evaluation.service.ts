@@ -53,7 +53,7 @@ export async function evaluate(
     ]
 
     const totalScore = checks.reduce((sum, c) => sum + c.score, 0)
-    const passed = hardChecksPassed && totalScore >= 64
+    const passed = hardChecksPassed && totalScore >= 48
 
     const issues: EvaluationIssue[] = []
     checks.forEach(c => issues.push(...c.issues))

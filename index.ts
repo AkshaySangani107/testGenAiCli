@@ -2,13 +2,10 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
-import axios from 'axios'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as dotenv from 'dotenv'
 import * as inquirer from 'inquirer'
-
-dotenv.config()
+import { runGenerationLoop } from './src/generation/generation.runner'
 
 const program = new Command()
 
@@ -19,10 +16,15 @@ program
 
 program
     .argument('<file>', 'TypeScript file to generate tests for')
-    .option('-o, --output <dir>', 'Output directory for the generated tests')
-    .option('-d, --dry-run', 'Skip writing to file and print output')
-    .action(async (file: string, options: { output?: string, dryRun?: boolean }) => {
-        // Step 1: Resolve path
+    .option('-o, --output <dir>', 'Output directory for generated tests')
+    .option('-d, --dry-run', 'Print generated tests without writing file')
+    .option('-u, --url <url>', 'Backend URL', 'http://localhost:3000')
+    .action(async (
+        file: string,
+        options: { output?: string; dryRun?: boolean; url: string }
+    ) => {
+
+        // ── Step 1: Validate file ──
         const filePath = path.resolve(process.cwd(), file)
 
         if (!fs.existsSync(filePath)) {
@@ -31,42 +33,68 @@ program
         }
 
         if (!filePath.endsWith('.ts')) {
-            console.log(chalk.red('❌ Only .ts files are supported.'))
+            console.log(chalk.red('❌ Only .ts files are supported'))
             process.exit(1)
         }
 
-        // Step 2: Read file
-        const fileContent = fs.readFileSync(filePath, 'utf8')
-
-        const apiUrl = process.env.TESTGENAI_API_URL || 'http://localhost:3000'
-
-        // Step 3: Health check
-        try {
-            await axios.get(`${apiUrl}/health`, { timeout: 5000 })
-        } catch (error) {
-            console.log(chalk.red(`❌ Backend is offline (${apiUrl})`))
+        const projectRoot = findProjectRoot(filePath)
+        if (!projectRoot) {
+            console.log(chalk.red('❌ Could not find project root (tsconfig.json)'))
             process.exit(1)
         }
 
-        // Step 4: Spinner
-        const spinner = ora('Generating tests...').start()
+        // ── Step 2: Health check ──
+        try {
+            const axios = require('axios')
+            await axios.get(`${options.url}/health`, { timeout: 5000 })
+        } catch {
+            console.log(chalk.red(`❌ Backend is offline (${options.url})`))
+            console.log(chalk.gray('Start backend with: npm run start:dev'))
+            process.exit(1)
+        }
+
+        // ── Step 3: Generation loop ──
+        console.log(chalk.blue(`\n🔍 Analyzing: ${path.basename(filePath)}`))
+        console.log(chalk.gray(`📁 Project root: ${projectRoot}\n`))
+
+        const spinner = ora('Generating tests (attempt 1)...').start()
 
         try {
-            const generatedCode = await apiCall(fileContent, apiUrl)
+            const result = await runGenerationLoop({
+                sourceFilePath: filePath,
+                projectRoot,
+                apiUrl: options.url,
+                onAttempt: (attempt, score) => {
+                    if (attempt > 1) {
+                        spinner.text = `Improving tests (attempt ${attempt}, score: ${score}/80)...`
+                    }
+                }
+            })
 
-            spinner.succeed(chalk.green('Tests generated successfully!'))
+            spinner.stop()
 
-            if (options.dryRun) {
-                console.log(chalk.yellow('\n--- Dry Run Output ---\n'))
-                console.log(generatedCode)
-                console.log(chalk.yellow('\n----------------------\n'))
-                return;
+            // ── Step 4: Show result ──
+            if (result.accepted) {
+                console.log(chalk.green(`✅ Tests accepted on attempt ${result.attempts}`))
+            } else {
+                console.log(chalk.yellow(`⚠️  Max attempts reached — using best result`))
             }
 
-            // Step 5: Write .spec.ts
+            console.log(chalk.gray(`📊 Score: ${result.score}/${result.maxScore}`))
+            console.log(chalk.gray(`🔄 Attempts: ${result.attempts}`))
+
+            // ── Step 5: Dry run ──
+            if (options.dryRun) {
+                console.log(chalk.yellow('\n--- Dry Run Output ---\n'))
+                console.log(result.specContent)
+                console.log(chalk.yellow('\n----------------------\n'))
+                return
+            }
+
+            // ── Step 6: Determine output path ──
             const parsed = path.parse(filePath)
-            
             let targetDir = parsed.dir
+
             if (options.output) {
                 targetDir = path.resolve(process.cwd(), options.output)
                 if (!fs.existsSync(targetDir)) {
@@ -76,44 +104,50 @@ program
 
             const specPath = path.join(targetDir, `${parsed.name}.spec${parsed.ext}`)
 
+            // ── Step 7: Overwrite protection ──
             if (fs.existsSync(specPath)) {
                 const answers = await inquirer.prompt([{
                     type: 'confirm',
                     name: 'overwrite',
-                    message: `File ${specPath} already exists. Overwrite?`,
+                    message: `${specPath} already exists. Overwrite?`,
                     default: false
                 }])
                 if (!answers.overwrite) {
-                    console.log(chalk.yellow('Skipped generation.'))
+                    console.log(chalk.yellow('Skipped.'))
                     process.exit(0)
                 }
             }
 
-            fs.writeFileSync(specPath, generatedCode, 'utf8')
+            // ── Step 8: Write file ──
+            fs.writeFileSync(specPath, result.specContent, 'utf8')
+            console.log(chalk.blue(`\n📄 Written to: ${specPath}`))
 
-            console.log(chalk.blue(`📄 Written to: ${specPath}`))
-        } catch (error) {
-            spinner.fail(chalk.red('Generation failed'))
-
-            if (axios.isAxiosError(error)) {
-                console.log(chalk.red(error.response?.data?.message ?? error.message))
-            } else if (error instanceof Error) {
-                console.log(chalk.red(error.message))
-            } else {
-                console.log(chalk.red('Unknown error'))
+            if (!result.accepted) {
+                console.log(chalk.yellow(
+                    '\n⚠️  Score below threshold. Tests may need manual fixes for:'
+                ))
+                console.log(chalk.gray('   - Custom DTO property names'))
+                console.log(chalk.gray('   - Internal import paths'))
+                console.log(chalk.gray('   - Custom repository method names'))
             }
 
+        } catch (error: any) {
+            spinner.fail(chalk.red('Generation failed'))
+            console.log(chalk.red(error.message))
             process.exit(1)
         }
     })
 
 program.parse()
 
-async function apiCall(fileContent: string, apiUrl: string): Promise<string> {
-    const response = await axios.post(
-        `${apiUrl}/generate`,
-        { fileContent },
-        { timeout: 120000 }
-    )
-    return response.data
+// ── Find project root by walking up directories ──
+function findProjectRoot(filePath: string): string | null {
+    let dir = path.dirname(filePath)
+    while (dir !== path.parse(dir).root) {
+        if (fs.existsSync(path.join(dir, 'tsconfig.json'))) {
+            return dir
+        }
+        dir = path.dirname(dir)
+    }
+    return null
 }

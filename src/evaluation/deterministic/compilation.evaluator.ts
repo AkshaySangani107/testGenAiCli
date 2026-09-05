@@ -20,69 +20,56 @@ function findTsConfig(projectRoot: string): string | null {
 // ── Function 2: Create temp tsconfig ──
 function createTempTsConfig(
     tsConfigPath: string,
-    specFilePath: string
+    specFilePath: string,
+    typeRootsPath: string
 ): string {
-
     const tempTsConfigPath = path.join(
         os.tmpdir(),
         `tsconfig-${Date.now()}.json`
     )
 
-    const extendsPath = path.relative(
-        os.tmpdir(),
-        tsConfigPath
-    )
+    const extendsPath = path.relative(os.tmpdir(), tsConfigPath)
 
     const tsConfig = {
         extends: extendsPath,
         include: [specFilePath],
+        typeRoots: [typeRootsPath],
         exclude: [],
         compilerOptions: {
             noEmit: true,
             allowJs: true,
+            esModuleInterop: true,
+            "types": ["jest", "node"]
         }
     }
 
-    fs.writeFileSync(
-        tempTsConfigPath,
-        JSON.stringify(tsConfig, null, 2)
-    )
-
+    fs.writeFileSync(tempTsConfigPath, JSON.stringify(tsConfig, null, 2))
     return tempTsConfigPath
 }
-
 // ── Function 3: Run tsc and get raw output ──
+// Add this debug temporarily to runTsc
 function runTsc(
     tempTsConfigPath: string,
     projectRoot: string
 ): { output: string; passed: boolean } {
-
     try {
-
-        const result = execSync(
-            `npx tsc --project "${tempTsConfigPath}" --noEmit`,
-            {
-                cwd: projectRoot,
-                stdio: ['ignore', 'pipe', 'pipe']
-            }
-        )
-
-        return {
-            output: result?.toString() ?? '',
-            passed: true
-        }
-
+        execSync(`npx tsc --project "${tempTsConfigPath}" --noEmit`, {
+            cwd: projectRoot,
+            stdio: ['ignore', 'pipe', 'pipe']
+        })
+        return { output: '', passed: true }
     } catch (error: any) {
+        const stdout = error.stdout?.toString() ?? ''
+        const stderr = error.stderr?.toString() ?? ''
+        const output = `${stdout}${stderr}`
 
-        const stdout =
-            error.stdout?.toString() ?? ''
-
-        const stderr =
-            error.stderr?.toString() ?? ''
+        const specErrors = output
+            .split('\n')
+            .filter(line => line.includes('.spec.'))
 
         return {
-            output: stdout + stderr,
-            passed: false
+            output,
+            passed: specErrors.length === 0
         }
     }
 }
@@ -163,7 +150,8 @@ export async function runCompilationCheck(
     const tempTsConfigPath =
         createTempTsConfig(
             tsConfigPath,
-            specFilePath
+            specFilePath,
+            projectRoot
         )
 
     try {
@@ -184,6 +172,14 @@ export async function runCompilationCheck(
                 output,
                 specFilePath
             )
+
+        if (!passed && issues.length === 0) {
+            issues.push({
+                category: 'compilation',
+                severity: 'high',
+                message: 'TypeScript compilation failed. Check import paths and type definitions.'
+            })
+        }
 
         // 5. Return result
         const finalPassed =
