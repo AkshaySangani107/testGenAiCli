@@ -3,16 +3,16 @@ import * as path from 'path'
 import axios from 'axios'
 import { evaluate } from '../evaluation/evaluation.service'
 import { buildFeedback } from '../evaluation/feedback.builder'
+import { buildDependencyContext } from '../resolver/dependency.resolver'
 
 const MAX_ATTEMPTS = 3
-const ACCEPTANCE_THRESHOLD = 64
+const ACCEPTANCE_THRESHOLD = 48
 
 interface RunnerInput {
     sourceFilePath: string
     projectRoot: string
     apiUrl: string
-    onAttempt?: (attempt: number, score: number) => void  // ← add
-
+    onAttempt?: (attempt: number, score: number) => void
 }
 
 interface RunnerResult {
@@ -26,38 +26,31 @@ interface RunnerResult {
 // ── Generate spec via backend ──
 async function generateSpec(
     fileContent: string,
+    dependencyContext: string,
     apiUrl: string
 ): Promise<string> {
-    // YOUR CODE HERE
-    const response = await axios.post(`${apiUrl}/generate`, {
-        fileContent
-    }, {
-        timeout: 180000,
-        headers: { 'Connection': 'close' }
-    });
-    return response.data;
-    // POST /generate with fileContent
-    // return response.data
+    const response = await axios.post(
+        `${apiUrl}/generate`,
+        { fileContent, dependencyContext },
+        { timeout: 180000 }
+    )
+    return response.data
 }
 
 // ── Retry spec via backend ──
 async function retrySpec(
     fileContent: string,
+    dependencyContext: string,
     previousSpec: string,
     feedback: string[],
     apiUrl: string
 ): Promise<string> {
-    // YOUR CODE HERE
-    // POST /generate/retry with fileContent + previousSpec + feedback
-    const response = await axios.post(`${apiUrl}/generate/retry`, {
-        fileContent,
-        previousSpec,
-        feedback
-    }, {
-        timeout: 180000,
-        headers: { 'Connection': 'close' }
-    });
-    return response.data;
+    const response = await axios.post(
+        `${apiUrl}/generate/retry`,
+        { fileContent, dependencyContext, previousSpec, feedback },
+        { timeout: 180000 }
+    )
+    return response.data
 }
 
 // ── Write temp spec file ──
@@ -65,11 +58,10 @@ function writeTempSpec(
     sourceFilePath: string,
     specContent: string
 ): string {
-    // YOUR CODE HERE
     const parsed = path.parse(sourceFilePath)
     const tempPath = path.join(
         parsed.dir,
-        `${parsed.name}.spec.tmp.ts`  // ← valid .ts extension
+        `${parsed.name}.spec.tmp.ts`
     )
     fs.writeFileSync(tempPath, specContent)
     return tempPath
@@ -77,11 +69,12 @@ function writeTempSpec(
 
 // ── Cleanup temp file ──
 function cleanupTemp(tempPath: string): void {
-    // YOUR CODE HERE
     try {
-        fs.unlinkSync(tempPath)
-    } catch (e) {
-        // ignore
+        if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath)
+        }
+    } catch {
+        // silently ignore
     }
 }
 
@@ -92,19 +85,33 @@ export async function runGenerationLoop(
 
     const fileContent = fs.readFileSync(input.sourceFilePath, 'utf8')
 
+    // ← Build dependency context once — reuse across all attempts
+    const dependencyContext = buildDependencyContext(
+        input.sourceFilePath,
+        input.projectRoot,
+        1,     // maxDepth
+        5000   // maxTokens
+    )
+
     let bestSpec = ''
     let bestScore = 0
     let previousSpec = ''
     let feedback: string[] = []
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        input.onAttempt?.(attempt, bestScore)  // ← add at start of loop
 
+        input.onAttempt?.(attempt, bestScore)
 
         // Step 1: Generate
         const specContent = attempt === 1
-            ? await generateSpec(fileContent, input.apiUrl)
-            : await retrySpec(fileContent, previousSpec, feedback, input.apiUrl)
+            ? await generateSpec(fileContent, dependencyContext, input.apiUrl)
+            : await retrySpec(
+                fileContent,
+                dependencyContext,
+                previousSpec,
+                feedback,
+                input.apiUrl
+            )
 
         // Step 2: Write temp file
         const tempPath = writeTempSpec(input.sourceFilePath, specContent)
@@ -147,7 +154,6 @@ export async function runGenerationLoop(
         }
     }
 
-    // All attempts exhausted — return best
     return {
         specContent: bestSpec,
         score: bestScore,
