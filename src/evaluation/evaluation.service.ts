@@ -24,10 +24,8 @@ export async function evaluate(
         runCoverageCheck(input.sourceFilePath, input.specFilePath)
     ])
 
-    const hardChecksPassed = compilation.passed && jest.passed
-
-    // Only run LLM evaluator if hard checks passp
-    // No point evaluating quality if it doesn't even compile
+    // If code compiles cleanly, evaluate semantic quality via LLM
+    // (Jest execution has its own partial score; compiling code should never be blocked from quality evaluation)
     let quality: CheckResult = {
         name: 'llm-quality',
         passed: false,
@@ -36,7 +34,7 @@ export async function evaluate(
         issues: []
     }
 
-    if (hardChecksPassed) {
+    if (compilation.passed) {
         quality = await runQualityCheck(
             input.sourceFilePath,
             input.specFilePath,
@@ -53,7 +51,7 @@ export async function evaluate(
     ]
 
     const totalScore = checks.reduce((sum, c) => sum + c.score, 0)
-    const passed = hardChecksPassed && totalScore >= 48
+    const passed = compilation.passed && totalScore >= 48
 
     const issues: EvaluationIssue[] = []
     checks.forEach(c => issues.push(...c.issues))

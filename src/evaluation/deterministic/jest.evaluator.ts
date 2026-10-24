@@ -58,12 +58,13 @@ function runJest(
 }
 
 function calculatePartialScore(output: string): number {
-    const match = stripAnsi(output).match(
-        /Tests:\s+(?:(\d+)\s+failed,\s+)?(\d+)\s+passed,\s+(\d+)\s+total/
-    )
-    if (!match) return 0
-    const passed = parseInt(match[2])
-    const total = parseInt(match[3])
+    const clean = stripAnsi(output)
+    const passedMatch = clean.match(/(\d+)\s+passed/)
+    const totalMatch = clean.match(/(\d+)\s+total/)
+    if (!passedMatch || !totalMatch) return 0
+    const passed = parseInt(passedMatch[1], 10)
+    const total = parseInt(totalMatch[1], 10)
+    if (total === 0) return 0
     return Math.round((passed / total) * 10)
 }
 

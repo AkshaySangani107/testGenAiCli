@@ -4,10 +4,11 @@ import { Project } from 'ts-morph'
 import { CheckResult } from '../types'
 
 function buildCompactClass(sourceFilePath: string): string {
+    const content = fs.readFileSync(sourceFilePath, 'utf8')
     const project = new Project({ useInMemoryFileSystem: true })
-    const sourceFile = project.addSourceFileAtPath(sourceFilePath)
+    const sourceFile = project.createSourceFile('source.ts', content)
     const cls = sourceFile.getClasses()[0]
-    if (!cls) throw new Error('No class found')
+    if (!cls) throw new Error('No class found in ' + sourceFilePath)
 
     const methods = cls.getMethods().map(m => `${m.getName()}(): ${m.getReturnType().getText()}`)
     const dependencies = cls.getConstructors()[0]?.getParameters().map(p => p.getType().getText()) || []

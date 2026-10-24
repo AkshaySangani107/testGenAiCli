@@ -19,9 +19,10 @@ program
     .option('-o, --output <dir>', 'Output directory for generated tests')
     .option('-d, --dry-run', 'Print generated tests without writing file')
     .option('-u, --url <url>', 'Backend URL', 'http://localhost:3000')
+    .option('-y, --yes', 'Automatically overwrite existing test file without prompting')
     .action(async (
         file: string,
-        options: { output?: string; dryRun?: boolean; url: string }
+        options: { output?: string; dryRun?: boolean; url: string; yes?: boolean }
     ) => {
 
         // ── Step 1: Validate file ──
@@ -105,7 +106,7 @@ program
             const specPath = path.join(targetDir, `${parsed.name}.spec${parsed.ext}`)
 
             // ── Step 7: Overwrite protection ──
-            if (fs.existsSync(specPath)) {
+            if (fs.existsSync(specPath) && !options.yes) {
                 const answers = await inquirer.prompt([{
                     type: 'confirm',
                     name: 'overwrite',

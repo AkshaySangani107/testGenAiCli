@@ -179,14 +179,30 @@ export function buildDependencyContext(
     lines.push('--- INJECTED SERVICES & REPOSITORIES (MOCK ONLY METHODS ACTUALLY CALLED) ---')
     for (const dep of depContracts) {
         if (dep.typeName.toLowerCase().includes('mapper')) {
-            lines.push(`- Provider: { provide: getMapperToken(), useValue: mockMapper }`)
-            lines.push(`  Methods called: ${dep.methodsCalled.length ? dep.methodsCalled.join(', ') : 'map, mapArray'}`)
+            lines.push(`- AutoMapper Provider: { provide: getMapperToken(), useValue: mockMapper }`)
+            lines.push(`  Methods called: ${dep.methodsCalled.length ? dep.methodsCalled.join(', ') : 'map, mapArray, mapArrayAsync'}`)
+            lines.push(`  Required Mock: const mockMapper = { map: jest.fn().mockImplementation((v: unknown) => v), mapArray: jest.fn().mockImplementation((a: unknown[]) => a || []), mapArrayAsync: jest.fn().mockImplementation((a: unknown[]) => Promise.resolve(a || [])) }`)
         } else {
             const methodList = dep.methodsCalled.length > 0
-                ? dep.methodsCalled.map(m => `${m}: jest.fn()`).join(', ')
-                : '// No methods called directly — use const mock = {} as any'
+                ? dep.methodsCalled.map(m => {
+                    const lower = m.toLowerCase()
+                    if (lower.includes('all') || lower.includes('list') || lower.includes('filter')) {
+                        return `${m}: jest.fn().mockResolvedValue([])`
+                    }
+                    if (lower.includes('exist') || lower.includes('has') || lower.includes('is')) {
+                        return `${m}: jest.fn().mockResolvedValue(false)`
+                    }
+                    if (lower.includes('create') || lower.includes('save') || lower.includes('insert') || lower.includes('update')) {
+                        return `${m}: jest.fn().mockImplementation((val: unknown) => Promise.resolve({ id: 1, ...(typeof val === 'object' && val !== null ? val : {}) }))`
+                    }
+                    if (lower.includes('get') || lower.includes('find') || lower.includes('one')) {
+                        return `${m}: jest.fn().mockResolvedValue([{ id: 1 }] as unknown)`
+                    }
+                    return `${m}: jest.fn().mockResolvedValue({} as unknown)`
+                }).join(', ')
+                : `// No methods called directly — use const mock = {} as unknown as ${dep.typeName}`
             lines.push(`- ${dep.typeName} (injected as: this.${dep.paramName})`)
-            lines.push(`  Required Mock: const mock${dep.typeName} = { ${methodList} }`)
+            lines.push(`  Required Mock: const mock${dep.typeName} = { ${methodList} } as unknown as ${dep.typeName}`)
             lines.push(`  Module Provider: { provide: ${dep.typeName}, useValue: mock${dep.typeName} }`)
         }
         lines.push('')

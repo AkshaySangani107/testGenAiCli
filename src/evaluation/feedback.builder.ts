@@ -131,7 +131,7 @@ function getActionableInstructions(
             // Missing names (not jest-related)
             const missingNames = issues
                 .filter(i =>
-                    i.message.includes('TS2304') &&
+                    (i.message.includes('TS2304') || i.message.includes('TS2552')) &&
                     !i.message.includes('jest') &&
                     !i.message.includes('expect') &&
                     !i.message.includes('describe') &&
@@ -142,6 +142,26 @@ function getActionableInstructions(
 
             missingNames.forEach(msg => {
                 instructions.push(`Fix missing name: ${msg}`)
+            })
+
+            // Syntax and parsing errors (e.g. TS1005, TS1109, TS1003, truncated code)
+            const syntaxErrors = issues
+                .filter(i => /TS1\d{3}/.test(i.message))
+                .map(i => i.message)
+                .filter((v, i, a) => a.indexOf(v) === i)
+
+            syntaxErrors.slice(0, 3).forEach(msg => {
+                instructions.push(`Fix syntax error: ${msg}. Make sure every describe/it block, bracket, parenthesis, and string is closed properly.`)
+            })
+
+            // Other compilation errors (e.g. TS2345, TS2339)
+            const otherErrors = issues
+                .filter(i => !i.message.includes('TS2307') && !i.message.includes('TS2304') && !i.message.includes('TS2552') && !/TS1\d{3}/.test(i.message))
+                .map(i => i.message)
+                .filter((v, i, a) => a.indexOf(v) === i)
+
+            otherErrors.slice(0, 3).forEach(msg => {
+                instructions.push(`Fix TypeScript error: ${msg}`)
             })
 
         } else {
