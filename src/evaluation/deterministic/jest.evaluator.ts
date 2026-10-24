@@ -46,13 +46,14 @@ function runJest(
             encoding: 'utf8'
         })
         return { output: output ?? '', passed: true, exitCode: 0 }
-    } catch (error: any) {
-        const stdout = error.stdout?.toString() ?? ''
-        const stderr = error.stderr?.toString() ?? ''
+    } catch (error: unknown) {
+        const err = error as { stdout?: Buffer | string; stderr?: Buffer | string; status?: number }
+        const stdout = err.stdout?.toString() ?? ''
+        const stderr = err.stderr?.toString() ?? ''
         return {
             output: `${stdout}\n${stderr}`.trim(),
             passed: false,
-            exitCode: error.status ?? 1
+            exitCode: err.status ?? 1
         }
     }
 }

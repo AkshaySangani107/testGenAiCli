@@ -58,9 +58,10 @@ function runTsc(
             stdio: ['ignore', 'pipe', 'pipe']
         })
         return { output: '', passed: true }
-    } catch (error: any) {
-        const stdout = error.stdout?.toString() ?? ''
-        const stderr = error.stderr?.toString() ?? ''
+    } catch (error: unknown) {
+        const err = error as { stdout?: Buffer | string; stderr?: Buffer | string }
+        const stdout = err.stdout?.toString() ?? ''
+        const stderr = err.stderr?.toString() ?? ''
         const output = `${stdout}${stderr}`
 
         const specErrors = output
