@@ -12,6 +12,7 @@ export interface BatchOptions {
     dryRun?: boolean
     yes?: boolean
     concurrency?: number
+    minCoverage?: number
 }
 
 export interface FileResult {
@@ -100,6 +101,7 @@ export async function runBatch(options: BatchOptions): Promise<BatchSummary> {
                     sourceFilePath: currentFile,
                     projectRoot: root,
                     apiUrl,
+                    minCoverage: options.minCoverage,
                     onAttempt: (attempt, score) => {
                         if (attempt > 1) {
                             spinner.text = `[${currentCount}/${files.length}] Refining ${chalk.cyan(fileName)} (attempt ${attempt}, score: ${score}/80)...`

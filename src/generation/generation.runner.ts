@@ -4,23 +4,29 @@ import axios from 'axios'
 import { evaluate } from '../evaluation/evaluation.service'
 import { buildFeedback } from '../evaluation/feedback.builder'
 import { buildDependencyContext } from '../resolver/dependency.resolver'
+import { CoverageGapDetector } from '../coverage/gap.detector'
+import { CoverageGapReport } from '../coverage/types'
+import { SpecMerger } from '../coverage/spec.merger'
 
 const MAX_ATTEMPTS = 3
-const ACCEPTANCE_THRESHOLD = 48
+const gapDetector = new CoverageGapDetector()
 
-interface RunnerInput {
+export interface RunnerInput {
     sourceFilePath: string
     projectRoot: string
     apiUrl: string
-    onAttempt?: (attempt: number, score: number) => void
+    minCoverage?: number
+    expandOnly?: boolean
+    onAttempt?: (attempt: number, score: number, statusMsg?: string) => void
 }
 
-interface RunnerResult {
+export interface RunnerResult {
     specContent: string
     score: number
     maxScore: number
     accepted: boolean
     attempts: number
+    coverageReport?: CoverageGapReport
 }
 
 // ── Generate spec via backend ──
@@ -48,6 +54,29 @@ async function retrySpec(
     const response = await axios.post(
         `${apiUrl}/generate/retry`,
         { fileContent, dependencyContext, previousSpec, feedback },
+        { timeout: 180000 }
+    )
+    return response.data
+}
+
+// ── Expand spec via backend ──
+async function expandSpec(
+    fileContent: string,
+    dependencyContext: string,
+    existingSpec: string,
+    uncoveredMethods: string[],
+    uncoveredBranches: string[],
+    apiUrl: string
+): Promise<string> {
+    const response = await axios.post(
+        `${apiUrl}/generate/expand`,
+        {
+            sourceContent: fileContent,
+            existingSpec,
+            uncoveredMethods,
+            uncoveredBranches,
+            dependencyContext
+        },
         { timeout: 180000 }
     )
     return response.data
@@ -82,8 +111,8 @@ function cleanupTemp(tempPath: string): void {
 export async function runGenerationLoop(
     input: RunnerInput
 ): Promise<RunnerResult> {
-
     const fileContent = fs.readFileSync(input.sourceFilePath, 'utf8')
+    const minCoverage = input.minCoverage ?? 75
 
     // Build Level-1 isolated dependency contract
     const dependencyContext = buildDependencyContext(
@@ -95,12 +124,12 @@ export async function runGenerationLoop(
     let bestScore = 0
     let previousSpec = ''
     let feedback: string[] = []
+    let finalCoverageReport: CoverageGapReport | undefined
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-
         input.onAttempt?.(attempt, bestScore)
 
-        // Step 1: Generate
+        // Step 1: Generate or Retry
         const specContent = attempt === 1
             ? await generateSpec(fileContent, dependencyContext, input.apiUrl)
             : await retrySpec(
@@ -131,8 +160,64 @@ export async function runGenerationLoop(
                 bestSpec = specContent
             }
 
-            // Step 5: Accept or retry
+            // Step 5: Check coverage gap if passed
             if (result.passed) {
+                let currentReport = gapDetector.detectGaps(
+                    input.sourceFilePath,
+                    tempPath,
+                    minCoverage
+                )
+
+                // If coverage gaps detected, attempt smart expansion
+                if (!currentReport.meetsThreshold && currentReport.uncoveredMethods.length > 0) {
+                    input.onAttempt?.(
+                        attempt,
+                        bestScore,
+                        `Coverage gap: ${currentReport.overallCoveragePct}% (Target: ${minCoverage}%). Expanding for [${currentReport.uncoveredMethods.join(', ')}]...`
+                    )
+
+                    try {
+                        const expansionCode = await expandSpec(
+                            fileContent,
+                            dependencyContext,
+                            bestSpec,
+                            currentReport.uncoveredMethods,
+                            currentReport.uncoveredBranches.map(b => `${b.method}: ${b.condition} (${b.throwType || 'Error'})`),
+                            input.apiUrl
+                        )
+
+                        const mergedCandidate = SpecMerger.merge(bestSpec, expansionCode)
+                        const expandedTempPath = writeTempSpec(input.sourceFilePath, mergedCandidate)
+
+                        try {
+                            const expandedResult = await evaluate(
+                                {
+                                    sourceFilePath: input.sourceFilePath,
+                                    specFilePath: expandedTempPath,
+                                    projectRoot: input.projectRoot
+                                },
+                                input.apiUrl
+                            )
+
+                            if (expandedResult.passed && expandedResult.score >= bestScore) {
+                                bestSpec = mergedCandidate
+                                bestScore = expandedResult.score
+                                currentReport = gapDetector.detectGaps(
+                                    input.sourceFilePath,
+                                    expandedTempPath,
+                                    minCoverage
+                                )
+                            }
+                        } finally {
+                            cleanupTemp(expandedTempPath)
+                        }
+                    } catch {
+                        // If expansion fails, retain existing working bestSpec
+                    }
+                }
+
+                finalCoverageReport = currentReport
+
                 // Asynchronously save to spec cache in backend
                 axios.post(`${input.apiUrl}/generate/cache/save`, {
                     sourceContent: fileContent,
@@ -147,7 +232,8 @@ export async function runGenerationLoop(
                     score: bestScore,
                     maxScore: result.maxScore,
                     accepted: true,
-                    attempts: attempt
+                    attempts: attempt,
+                    coverageReport: finalCoverageReport
                 }
             }
 
@@ -166,6 +252,7 @@ export async function runGenerationLoop(
         score: bestScore,
         maxScore: 80,
         accepted: false,
-        attempts: MAX_ATTEMPTS
+        attempts: MAX_ATTEMPTS,
+        coverageReport: finalCoverageReport
     }
 }

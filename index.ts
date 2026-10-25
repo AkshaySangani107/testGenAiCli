@@ -18,6 +18,8 @@ interface GlobalOptions {
     batch?: boolean
     onlyMissing?: boolean
     concurrency?: string
+    minCoverage?: string
+    expand?: boolean
 }
 
 const program = new Command()
@@ -32,6 +34,8 @@ program
     .option('-b, --batch', 'Run in batch mode for directories or wildcard patterns')
     .option('-m, --only-missing', 'In batch mode, only generate tests for services that do not have a .spec.ts file')
     .option('-c, --concurrency <number>', 'Number of files to process concurrently in batch mode', '1')
+    .option('-C, --min-coverage <number>', 'Target minimum code coverage percentage (default: 75)')
+    .option('-e, --expand', 'Perform smart test expansion to cover missing methods and error branches')
     .option('-o, --output <dir>', 'Output directory for generated tests')
     .option('-d, --dry-run', 'Print generated tests without writing files')
     .option('-u, --url <url>', 'Backend URL', 'http://localhost:3000')
@@ -78,6 +82,10 @@ program
             console.log(chalk.blue(`\n📂 Discovered ${files.length} file(s) for batch generation:`))
             files.forEach((f) => console.log(chalk.gray(`  • ${path.relative(process.cwd(), f)}`)))
 
+            const minCoverageNumber = options.minCoverage
+                ? parseInt(options.minCoverage, 10) || 75
+                : 75
+
             await runBatch({
                 files,
                 projectRoot,
@@ -86,6 +94,7 @@ program
                 dryRun: options.dryRun,
                 yes: options.yes,
                 concurrency: concurrencyNumber,
+                minCoverage: minCoverageNumber,
             })
             return
         }
@@ -115,14 +124,21 @@ program
         console.log(chalk.gray(`📁 Project root: ${projectRoot}\n`))
 
         const spinner = ora('Generating tests (attempt 1)...').start()
+        const minCoverageTarget = options.minCoverage
+            ? parseInt(options.minCoverage, 10) || 75
+            : 75
 
         try {
             const result = await runGenerationLoop({
                 sourceFilePath: filePath,
                 projectRoot,
                 apiUrl: options.url,
-                onAttempt: (attempt, score) => {
-                    if (attempt > 1) {
+                minCoverage: minCoverageTarget,
+                expandOnly: options.expand,
+                onAttempt: (attempt, score, statusMsg) => {
+                    if (statusMsg) {
+                        spinner.text = chalk.cyan(statusMsg)
+                    } else if (attempt > 1) {
                         spinner.text = `Improving tests (attempt ${attempt}, score: ${score}/80)...`
                     }
                 },
@@ -137,6 +153,16 @@ program
             }
 
             console.log(chalk.gray(`📊 Score: ${result.score}/${result.maxScore}`))
+            if (result.coverageReport) {
+                const cov = result.coverageReport
+                const statusColor = cov.meetsThreshold ? chalk.green : chalk.yellow
+                console.log(
+                    statusColor(`🎯 Coverage: ${cov.overallCoveragePct}% (Methods: ${cov.methodCoveragePct}%, Branches: ${cov.branchCoveragePct}%)`)
+                )
+                if (cov.uncoveredMethods.length > 0) {
+                    console.log(chalk.yellow(`⚠️  Untested methods: ${cov.uncoveredMethods.join(', ')}`))
+                }
+            }
             console.log(chalk.gray(`🔄 Attempts: ${result.attempts}`))
 
             if (options.dryRun) {
