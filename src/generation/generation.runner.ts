@@ -133,6 +133,15 @@ export async function runGenerationLoop(
 
             // Step 5: Accept or retry
             if (result.passed) {
+                // Asynchronously save to spec cache in backend
+                axios.post(`${input.apiUrl}/generate/cache/save`, {
+                    sourceContent: fileContent,
+                    className: path.parse(input.sourceFilePath).name,
+                    specContent: bestSpec,
+                    score: bestScore,
+                    attempts: attempt,
+                }).catch(() => {/* non-blocking cache write */})
+
                 return {
                     specContent: bestSpec,
                     score: bestScore,

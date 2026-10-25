@@ -145,6 +145,11 @@ export async function runBatch(options: BatchOptions): Promise<BatchSummary> {
                     error: errMsg,
                 })
             }
+
+            // Polite pause between files to stay safely within free-tier burst limits
+            if (queue.length > 0) {
+                await new Promise((resolve) => setTimeout(resolve, 2000))
+            }
         }
     }
 
