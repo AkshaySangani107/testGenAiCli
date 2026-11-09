@@ -1,12 +1,14 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { Project, SyntaxKind } from 'ts-morph'
+import { MockFactoryGenerator, MockFactoryDefinition } from './mock.factory'
 
 export interface DependencyMockContract {
     paramName: string
     typeName: string
     isCustomProvider?: boolean
     methodsCalled: string[]
+    factory?: MockFactoryDefinition
 }
 
 export interface DirectTypeContract {
@@ -57,7 +59,7 @@ function resolveImportPath(
     return null
 }
 
-// ── Extract Level-1 Injected Dependency Method Contracts ──
+// ── Extract Level-1 Injected Dependency Method Contracts with Auto-Mock Factories ──
 export function extractLevel1DependencyContracts(
     sourceFilePath: string
 ): DependencyMockContract[] {
@@ -75,10 +77,19 @@ export function extractLevel1DependencyContracts(
         const name = p.getName()
         const typeNode = p.getTypeNode()
         const typeName = typeNode ? typeNode.getText().trim() : p.getType().getText().trim()
-        const isMapper = typeName.toLowerCase().includes('mapper') || p.getDecorators().some(d => d.getName().includes('Mapper'))
+        
+        // Extract parameter decorators with arguments (e.g. @InjectRepository(User), @Inject(CACHE_MANAGER))
+        const decorators = p.getDecorators().map(d => ({
+            name: d.getName(),
+            args: d.getArguments().map(a => a.getText().trim())
+        }))
+
+        const isMapper = typeName.toLowerCase().includes('mapper') || decorators.some(d => d.name.includes('Mapper'))
+
         return {
             paramName: name,
             typeName,
+            decorators,
             isCustomProvider: isMapper
         }
     })
@@ -107,12 +118,23 @@ export function extractLevel1DependencyContracts(
         })
     })
 
-    return deps.map(d => ({
-        paramName: d.paramName,
-        typeName: d.typeName,
-        isCustomProvider: d.isCustomProvider,
-        methodsCalled: Array.from(callsByDep[d.paramName] || [])
-    }))
+    return deps.map(d => {
+        const methodsCalled = Array.from(callsByDep[d.paramName] || [])
+        const factory = MockFactoryGenerator.generateFactory(
+            d.paramName,
+            d.typeName,
+            d.decorators,
+            methodsCalled
+        )
+
+        return {
+            paramName: d.paramName,
+            typeName: d.typeName,
+            isCustomProvider: d.isCustomProvider,
+            methodsCalled,
+            factory
+        }
+    })
 }
 
 // ── Extract Direct Level-1 DTO & Entity Signatures (Non-transitive) ──
@@ -176,34 +198,20 @@ export function buildDependencyContext(
     lines.push('CRITICAL: ONLY mock these direct dependencies. DO NOT import or provide nested/transitive dependencies.')
     lines.push('')
 
-    lines.push('--- INJECTED SERVICES & REPOSITORIES (MOCK ONLY METHODS ACTUALLY CALLED) ---')
+    lines.push('--- INJECTED SERVICES & REPOSITORIES (USE THESE EXACT PRE-BUILT MOCK FIXTURES) ---')
     for (const dep of depContracts) {
-        if (dep.typeName.toLowerCase().includes('mapper')) {
-            lines.push(`- AutoMapper Provider: { provide: getMapperToken(), useValue: mockMapper }`)
-            lines.push(`  Methods called: ${dep.methodsCalled.length ? dep.methodsCalled.join(', ') : 'map, mapArray, mapArrayAsync'}`)
-            lines.push(`  Required Mock: const mockMapper = { map: jest.fn().mockImplementation((v: unknown) => v), mapArray: jest.fn().mockImplementation((a: unknown[]) => a || []), mapArrayAsync: jest.fn().mockImplementation((a: unknown[]) => Promise.resolve(a || [])) }`)
-        } else {
-            const methodList = dep.methodsCalled.length > 0
-                ? dep.methodsCalled.map(m => {
-                    const lower = m.toLowerCase()
-                    if (lower.includes('all') || lower.includes('list') || lower.includes('filter')) {
-                        return `${m}: jest.fn().mockResolvedValue([])`
-                    }
-                    if (lower.includes('exist') || lower.includes('has') || lower.includes('is')) {
-                        return `${m}: jest.fn().mockResolvedValue(false)`
-                    }
-                    if (lower.includes('create') || lower.includes('save') || lower.includes('insert') || lower.includes('update')) {
-                        return `${m}: jest.fn().mockImplementation((val: unknown) => Promise.resolve({ id: 1, ...(typeof val === 'object' && val !== null ? val : {}) }))`
-                    }
-                    if (lower.includes('get') || lower.includes('find') || lower.includes('one')) {
-                        return `${m}: jest.fn().mockResolvedValue([{ id: 1 }] as unknown)`
-                    }
-                    return `${m}: jest.fn().mockResolvedValue({} as unknown)`
-                }).join(', ')
-                : `// No methods called directly — use const mock = {} as unknown as ${dep.typeName}`
-            lines.push(`- ${dep.typeName} (injected as: this.${dep.paramName})`)
-            lines.push(`  Required Mock: const mock${dep.typeName} = { ${methodList} } as unknown as ${dep.typeName}`)
-            lines.push(`  Module Provider: { provide: ${dep.typeName}, useValue: mock${dep.typeName} }`)
+        if (dep.factory) {
+            lines.push(`- Injected: this.${dep.paramName} (${dep.typeName}) [Decorator: ${dep.factory.decoratorType}]`)
+            if (dep.methodsCalled.length > 0) {
+                lines.push(`  Methods invoked by service: ${dep.methodsCalled.join(', ')}`)
+            }
+            lines.push(`  MOCK FIXTURE CODE:`)
+            lines.push(`  ${dep.factory.mockFactoryCode.split('\n').join('\n  ')}`)
+            lines.push(`  MODULE PROVIDER:`)
+            lines.push(`  ${dep.factory.providerDefinition}`)
+            if (dep.factory.requiredImports.length > 0) {
+                lines.push(`  Required Imports: ${dep.factory.requiredImports.join(', ')}`)
+            }
         }
         lines.push('')
     }
