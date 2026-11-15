@@ -9,6 +9,7 @@ import axios from 'axios'
 import { runGenerationLoop } from './src/generation/generation.runner'
 import { discoverTargetFiles } from './src/batch/file.finder'
 import { runBatch, findProjectRoot } from './src/batch/batch.runner'
+import { showDatasetStats, exportDatasetFiles } from './src/dataset/dataset.cli'
 
 interface GlobalOptions {
     output?: string
@@ -29,8 +30,40 @@ program
     .description('AI-powered test generator for TypeScript')
     .version('1.0.0')
 
+const datasetCmd = program
+    .command('dataset')
+    .description('Manage fine-tuning dataset pairs and export training JSONL')
+
+datasetCmd
+    .command('stats')
+    .description('Display statistics of collected training pairs')
+    .option('-u, --url <url>', 'Backend URL', 'http://localhost:3000')
+    .action(async (opts: { url: string }) => {
+        await showDatasetStats(opts.url)
+    })
+
+datasetCmd
+    .command('export')
+    .description('Export verified dataset pairs into ChatML or Alpaca JSONL for training')
+    .option('-u, --url <url>', 'Backend URL', 'http://localhost:3000')
+    .option('-o, --output <dir>', 'Output directory for exported JSONL files', './dataset')
+    .option('-f, --format <format>', 'Export format (chatml or alpaca)', 'chatml')
+    .option('-s, --min-score <score>', 'Minimum evaluation score threshold (default: 65)', '65')
+    .option('--split <split>', 'Split to export (all, train, val, or test)', 'all')
+    .option('--first-pass-only', 'Only export pairs that passed on Attempt 1')
+    .action(async (opts: { url: string; output: string; format: 'chatml' | 'alpaca'; minScore: string; split?: 'all' | 'train' | 'val' | 'test'; firstPassOnly?: boolean }) => {
+        await exportDatasetFiles({
+            url: opts.url,
+            output: opts.output,
+            format: opts.format,
+            minScore: parseInt(opts.minScore, 10) || 65,
+            split: opts.split,
+            firstPassOnly: opts.firstPassOnly,
+        })
+    })
+
 program
-    .argument('<target>', 'File, directory, or glob pattern to generate tests for (e.g. src/user.service.ts, src/, or "**/*.service.ts")')
+    .argument('[target]', 'File, directory, or glob pattern to generate tests for (e.g. src/user.service.ts, src/, or "**/*.service.ts")')
     .option('-b, --batch', 'Run in batch mode for directories or wildcard patterns')
     .option('-m, --only-missing', 'In batch mode, only generate tests for services that do not have a .spec.ts file')
     .option('-c, --concurrency <number>', 'Number of files to process concurrently in batch mode', '1')
@@ -40,7 +73,12 @@ program
     .option('-d, --dry-run', 'Print generated tests without writing files')
     .option('-u, --url <url>', 'Backend URL', 'http://localhost:3000')
     .option('-y, --yes', 'Automatically overwrite existing test files without prompting')
-    .action(async (target: string, options: GlobalOptions) => {
+    .action(async (target: string | undefined, options: GlobalOptions) => {
+        if (!target) {
+            program.help()
+            return
+        }
+
         // ── Step 1: Health check ──
         try {
             await axios.get(`${options.url}/health`, { timeout: 5000 })
